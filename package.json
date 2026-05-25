@@ -1,0 +1,30 @@
+{
+  "name": "@answerlayer/cli",
+  "version": "0.1.0",
+  "description": "Open-source command line client for the AnswerLayer API.",
+  "type": "module",
+  "bin": {
+    "answerlayer": "./bin/answerlayer.js",
+    "al": "./bin/answerlayer.js"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "keywords": [
+    "answerlayer",
+    "cli",
+    "analytics",
+    "semantic-layer",
+    "sql"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  }
+}
