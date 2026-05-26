@@ -23,49 +23,82 @@ export class AnswerLayerClient {
   }
 
   async request(method, path, { body, query, auth = true } = {}) {
+    const result = await this.rawRequest(method, path, {
+      body,
+      query,
+      auth,
+      headers: { Accept: "application/json" },
+    });
+    return result.data;
+  }
+
+  async rawRequest(method, path, { body, query, headers = {}, auth = true } = {}) {
     if (auth && !this.apiKey) {
       throw new Error("Missing API key. Run `answerlayer configure --base-url <url> --api-key <key>` or set ANSWERLAYER_API_KEY.");
     }
 
-    const url = new URL(`${this.baseUrl}${path}`);
+    const apiPath = path.startsWith("/") ? path : `/${path}`;
+    const url = new URL(`${this.baseUrl}${apiPath}`);
     if (query) {
       for (const [key, value] of Object.entries(query)) {
-        if (value !== undefined && value !== null && value !== "") {
+        if (Array.isArray(value)) {
+          for (const item of value) {
+            if (item !== undefined && item !== null && item !== "") {
+              url.searchParams.append(key, String(item));
+            }
+          }
+        } else if (value !== undefined && value !== null && value !== "") {
           url.searchParams.set(key, String(value));
         }
       }
     }
 
-    const headers = {
+    const requestHeaders = {
       Accept: "application/json",
       "User-Agent": "answerlayer-cli/0.1.0",
+      ...headers,
     };
 
     if (auth) {
-      headers["X-API-Key"] = this.apiKey;
+      requestHeaders["X-API-Key"] = this.apiKey;
     }
 
-    const init = { method, headers };
+    const init = { method, headers: requestHeaders };
     if (body !== undefined) {
-      headers["Content-Type"] = "application/json";
-      init.body = JSON.stringify(body);
+      if (isFormData(body) || typeof body === "string" || Buffer.isBuffer(body)) {
+        init.body = body;
+      } else {
+        requestHeaders["Content-Type"] = requestHeaders["Content-Type"] || "application/json";
+        init.body = JSON.stringify(body);
+      }
     }
 
     const response = await this.fetchImpl(url, init);
-    const text = await response.text();
-    const parsed = parseResponseBody(text, response.headers.get("content-type"));
+    const arrayBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    const text = buffer.toString("utf8");
+    const responseHeaders = Object.fromEntries(response.headers.entries());
+    const contentType = response.headers.get("content-type") || "";
+    const data = parseResponseBody(text, contentType);
 
     if (!response.ok) {
-      const detail = parsed && typeof parsed === "object" && "detail" in parsed
-        ? parsed.detail
+      const detail = data && typeof data === "object" && "detail" in data
+        ? data.detail
         : text;
       const message = detail
         ? `API request failed (${response.status}): ${formatDetail(detail)}`
         : `API request failed (${response.status})`;
-      throw new AnswerLayerApiError(message, { status: response.status, body: parsed });
+      throw new AnswerLayerApiError(message, { status: response.status, body: data });
     }
 
-    return parsed;
+    return {
+      status: response.status,
+      headers: responseHeaders,
+      contentType,
+      buffer,
+      text,
+      data,
+    };
   }
 
   health() {
@@ -142,4 +175,8 @@ function formatDetail(detail) {
     return detail;
   }
   return JSON.stringify(detail);
+}
+
+function isFormData(value) {
+  return typeof FormData !== "undefined" && value instanceof FormData;
 }
