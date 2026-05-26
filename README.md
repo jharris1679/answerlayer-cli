@@ -35,9 +35,12 @@ The CLI sends API keys using the `X-API-Key` header.
 
 Useful scopes:
 
+- `api_key:manage` for API key management
 - `connection:read` for listing connections
 - `query:execute` for raw SQL
 - `saved_query:read`, `saved_query:execute`, and `saved_query:write` for saved-query workflows
+- `semantic:read`, `semantic:write`, and `semantic:generate` for semantic-layer workflows
+- `dashboard:read`, `dashboard:write`, `tile:read`, and `tile:write` for dashboard workflows
 - `inquiry:execute` for natural-language inquiry
 
 ## Commands
@@ -48,6 +51,8 @@ answerlayer openapi --output openapi.json
 
 answerlayer connections list
 answerlayer connections get <connection-id>
+answerlayer connections create --data-file ./postgres-connection.json
+answerlayer metadata structure <connection-id>
 
 answerlayer query run <connection-id> --sql "select * from orders limit 10"
 answerlayer query validate <connection-id> --sql "select * from orders"
@@ -57,34 +62,38 @@ answerlayer saved-queries list
 answerlayer saved-queries create --name "Revenue by month" --connection <connection-id> --file ./revenue.sql
 answerlayer saved-queries execute <saved-query-id> --format table
 
+answerlayer semantic entities create --connection <connection-id> --name Orders --source-table public.orders --identifier id
+answerlayer semantic metrics list --connection <connection-id>
+answerlayer semantic metrics generate --connection <connection-id> --prompt "SaaS revenue metrics"
+
 answerlayer inquiry ask --connection <connection-id> "What changed in revenue this month?"
 answerlayer inquiry ask --session <session-id> "Break that down by region"
+
+answerlayer dashboards create --title "Executive overview" --visibility org
+answerlayer tiles create --title "Revenue" --source-type saved_query --source <saved-query-id>
+answerlayer dashboards attach-tile <dashboard-id> --tile <tile-id> --x 0 --y 0 --w 6 --h 4
+
+answerlayer documents upload ./definitions.md --title "Business definitions"
+answerlayer documents link <document-id> --connection <connection-id>
+
+answerlayer api-keys create --name "CI" --scope query:execute --scope saved_query:execute
 ```
 
 Most read commands support `--json`. Query results support `--format table|json|csv`.
 
-## Full API coverage
-
-The named commands are convenience wrappers for common workflows. For functional parity with the REST API, use `answerlayer api`:
+For complex create/update payloads, pass structured JSON:
 
 ```bash
-answerlayer api get /api/v1/connections/
-answerlayer api post /api/v1/semantic/entities --body '{"name":"Orders","description":"Customer orders"}'
-answerlayer api get /api/v1/metadata/structure/<connection-id> --query include_pii=true
-answerlayer api post /api/v1/csv/upload --form name=orders --file file=./orders.csv
-answerlayer api patch /api/v1/dashboards/<dashboard-id> --body-file ./dashboard-update.json
-answerlayer api get /api/v1/branding/assets/logo --output logo.png
+answerlayer connections create --data-file ./connection.json
+answerlayer dashboards update <dashboard-id> --data '{"default_filters":[{"key":"region","type":"string_enum","label":"Region"}]}'
+answerlayer branding update --data-file ./branding.json
 ```
 
-Useful options:
+## Command groups
 
-- `--body <json>` or `--body-file <path>` for JSON request bodies
-- `--raw-body` to send body text without JSON parsing
-- `--query key=value`, `--header key=value`, and `--form key=value`, all repeatable
-- `--file field=path` for multipart uploads
-- `--include` to print response status and headers
-- `--output <path>` or `--raw` for binary responses
-- `--no-auth` for public endpoints
+- Core: `api-keys`, `connections`, `metadata`, `query`, `query-results`
+- Data products: `saved-queries`, `semantic`, `inquiry`, `generation`, `tiles`, `dashboards`
+- Supporting resources: `documents`, `branding`, `uploads`, `chains`, `users`, `org`, `roles`, `billing`, `stats`
 
 ## Development
 

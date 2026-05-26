@@ -4,6 +4,15 @@ import { AnswerLayerClient } from "./client.js";
 import { formatJson, formatList, formatQueryResult } from "./format.js";
 import { readConfig, resolveAuth, writeConfig } from "./config.js";
 
+const SEMANTIC_RESOURCES = new Set([
+  "entities",
+  "relationships",
+  "measures",
+  "metrics",
+  "dimensions",
+  "filters",
+]);
+
 export async function main(argv, io) {
   const parsed = parseArgs(argv);
   const [group, command, ...positionals] = parsed.positionals;
@@ -20,63 +29,37 @@ export async function main(argv, io) {
   const { baseUrl, apiKey } = resolveAuth(parsed.flags, io.env);
   const client = new AnswerLayerClient({ baseUrl, apiKey });
 
-  if (group === "health") {
-    const result = await client.health();
-    write(io.stdout, parsed.flags.json ? formatJson(result) : `ok ${JSON.stringify(result)}\n`);
-    return;
-  }
+  if (group === "health") return handleHealth(client, command, parsed, io);
+  if (group === "openapi") return handleOpenApi(client, parsed, io);
+  if (group === "auth") return handleAuth(client, command, parsed, io);
+  if (group === "api-keys" || group === "keys") return handleApiKeys(client, command, positionals, parsed, io);
+  if (group === "connections") return handleConnections(client, command, positionals, parsed, io);
+  if (group === "metadata") return handleMetadata(client, command, positionals, parsed, io);
+  if (group === "query") return handleQuery(client, command, positionals, parsed, io);
+  if (group === "query-results" || group === "results") return handleQueryResults(client, command, positionals, parsed, io);
+  if (group === "saved-queries" || group === "saved") return handleSavedQueries(client, command, positionals, parsed, io);
+  if (group === "semantic") return handleSemantic(client, command, positionals, parsed, io);
+  if (group === "inquiry") return handleInquiry(client, command, positionals, parsed, io);
+  if (group === "generation") return handleGeneration(client, command, positionals, parsed, io);
+  if (group === "tiles") return handleTiles(client, command, positionals, parsed, io);
+  if (group === "dashboards") return handleDashboards(client, command, positionals, parsed, io);
+  if (group === "documents" || group === "context-documents") return handleDocuments(client, command, positionals, parsed, io);
+  if (group === "branding") return handleBranding(client, command, positionals, parsed, io);
+  if (group === "uploads") return handleUploads(client, command, positionals, parsed, io);
+  if (group === "chains") return handleChains(client, command, positionals, parsed, io);
+  if (group === "users") return handleUsers(client, command, positionals, parsed, io);
+  if (group === "org" || group === "organization") return handleOrganization(client, command, positionals, parsed, io);
+  if (group === "roles") return handleRoles(client, command, positionals, parsed, io);
+  if (group === "billing") return handleBilling(client, command, positionals, parsed, io);
+  if (group === "stats") return handleStats(client, command, parsed, io);
 
-  if (group === "openapi") {
-    const result = await client.rawRequest("GET", "/openapi.json", { auth: false });
-    return writeApiResponse(result, parsed, io);
-  }
-
-  if (group === "api") {
-    return handleApi(client, command, positionals, parsed, io);
-  }
-
-  if (group === "connections") {
-    return handleConnections(client, command, positionals, parsed, io);
-  }
-
-  if (group === "query") {
-    return handleQuery(client, command, positionals, parsed, io);
-  }
-
-  if (group === "saved-queries" || group === "saved") {
-    return handleSavedQueries(client, command, positionals, parsed, io);
-  }
-
-  if (group === "inquiry") {
-    return handleInquiry(client, command, positionals, parsed, io);
-  }
-
-  throw usage(`Unknown command: ${group}`);
-}
-
-async function handleApi(client, command, positionals, parsed, io) {
-  const method = (command || "").toUpperCase();
-  if (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"].includes(method)) {
-    throw usage("Expected `api <method> <path>`");
-  }
-
-  const apiPath = requirePositional(positionals, 0, "API path");
-  const headers = parseHeaderFlags(allValues(parsed.flags.header));
-  const body = await buildApiBody(parsed.flags, io);
-  const result = await client.rawRequest(method, apiPath, {
-    auth: !parsed.flags.noAuth,
-    query: parsePairFlags(allValues(parsed.flags.query), "--query"),
-    headers,
-    body,
-  });
-
-  writeApiResponse(result, parsed, io);
+  throw usage(`Unknown command group: ${group}`);
 }
 
 function configure(parsed, io) {
   const existing = readConfig(io.env);
-  const baseUrl = parsed.flags.baseUrl || existing.baseUrl;
-  const apiKey = parsed.flags.apiKey || existing.apiKey;
+  const baseUrl = firstValue(parsed.flags.baseUrl) || existing.baseUrl;
+  const apiKey = firstValue(parsed.flags.apiKey) || existing.apiKey;
 
   if (!baseUrl || !apiKey) {
     throw usage("configure requires --base-url and --api-key");
@@ -86,217 +69,996 @@ function configure(parsed, io) {
   write(io.stdout, `Saved AnswerLayer config to ${configPath}\n`);
 }
 
-async function handleConnections(client, command, positionals, parsed, io) {
+async function handleHealth(client, command, parsed, io) {
+  const pathName = command === "ready" ? "/api/v1/ready" : "/api/v1/health";
+  return requestAndPrint(client, "GET", pathName, parsed, io, { auth: false, okText: "ok" });
+}
+
+async function handleOpenApi(client, parsed, io) {
+  return requestAndPrint(client, "GET", "/openapi.json", parsed, io, { auth: false });
+}
+
+async function handleAuth(client, command, parsed, io) {
+  if (command === "me" || !command) {
+    return requestAndPrint(client, "GET", "/api/v1/auth/me", parsed, io);
+  }
+  if (command === "logout") {
+    return requestAndPrint(client, "POST", "/api/v1/auth/logout", parsed, io);
+  }
+  throw usage(`Unknown auth command: ${command}`);
+}
+
+async function handleApiKeys(client, command, positionals, parsed, io) {
   if (command === "list" || !command) {
-    const result = await client.listConnections();
-    if (parsed.flags.json) {
-      write(io.stdout, formatJson(result));
-      return;
-    }
-    write(io.stdout, formatList(result, [
-      { key: "id", label: "ID" },
-      { key: "name", label: "Name" },
-      { key: "db_type", label: "Type" },
-      { key: "status", label: "Status" },
-    ]));
-    return;
+    return requestAndPrint(client, "GET", "/api/v1/api-keys/", parsed, io, {
+      table: [
+        { key: "id", label: "ID" },
+        { key: "name", label: "Name" },
+        { key: "prefix", label: "Prefix" },
+        { key: "is_active", label: "Active" },
+        { key: "is_admin", label: "Admin" },
+      ],
+    });
+  }
+
+  if (command === "create") {
+    const payload = await readData(parsed.flags, io, {
+      name: firstValue(parsed.flags.name),
+      scopes: csvOrRepeated(parsed.flags.scope),
+      is_admin: Boolean(parsed.flags.admin),
+      connection_id: firstValue(parsed.flags.connection),
+      expires_at: firstValue(parsed.flags.expiresAt),
+    });
+    requirePayloadValue(payload, "name", "api-keys create requires --name");
+    return requestAndPrint(client, "POST", "/api/v1/api-keys/", parsed, io, { body: payload });
+  }
+
+  if (command === "revoke" || command === "delete") {
+    const id = requirePositional(positionals, 0, "API key id");
+    return requestAndPrint(client, "DELETE", `/api/v1/api-keys/${encodeURIComponent(id)}`, parsed, io);
+  }
+
+  throw usage(`Unknown api-keys command: ${command}`);
+}
+
+async function handleConnections(client, command, positionals, parsed, io) {
+  if (command === "supported" || command === "supported-types") {
+    return requestAndPrint(client, "GET", "/api/v1/connections/supported_types", parsed, io, {
+      table: [
+        { key: "id", label: "ID" },
+        { key: "label", label: "Name" },
+        { key: "supported", label: "Supported" },
+      ],
+    });
+  }
+
+  if (command === "list" || !command) {
+    return requestAndPrint(client, "GET", "/api/v1/connections/", parsed, io, {
+      table: [
+        { key: "id", label: "ID" },
+        { key: "name", label: "Name" },
+        { key: "db_type", label: "Type" },
+        { key: "status", label: "Status" },
+      ],
+    });
   }
 
   if (command === "get") {
     const id = requirePositional(positionals, 0, "connection id");
-    write(io.stdout, formatJson(await client.getConnection(id)));
-    return;
+    return requestAndPrint(client, "GET", `/api/v1/connections/${encodeURIComponent(id)}`, parsed, io);
+  }
+
+  if (command === "create") {
+    const payload = await readData(parsed.flags, io, {
+      name: firstValue(parsed.flags.name),
+      db_type: firstValue(parsed.flags.type) || firstValue(parsed.flags.dbType),
+      config: parseJsonFlag(firstValue(parsed.flags.config), "config"),
+    });
+    return requestAndPrint(client, "POST", "/api/v1/connections/", parsed, io, { body: payload });
+  }
+
+  if (command === "update") {
+    const id = requirePositional(positionals, 0, "connection id");
+    return requestAndPrint(client, "PUT", `/api/v1/connections/${encodeURIComponent(id)}`, parsed, io, {
+      body: await readData(parsed.flags, io),
+    });
+  }
+
+  if (command === "delete") {
+    const id = requirePositional(positionals, 0, "connection id");
+    return requestAndPrint(client, "DELETE", `/api/v1/connections/${encodeURIComponent(id)}`, parsed, io);
+  }
+
+  if (command === "schema") {
+    const id = requirePositional(positionals, 0, "connection id");
+    return requestAndPrint(client, "GET", `/api/v1/connections/${encodeURIComponent(id)}/schema`, parsed, io);
+  }
+
+  if (command === "config-schema") {
+    const dbType = requirePositional(positionals, 0, "database type");
+    return requestAndPrint(client, "GET", `/api/v1/connections/config_schema/${encodeURIComponent(dbType)}`, parsed, io);
+  }
+
+  if (command === "check-limit") {
+    return requestAndPrint(client, "GET", "/api/v1/connections/check_limit", parsed, io);
+  }
+
+  if (command === "request-type") {
+    const dbType = firstValue(parsed.flags.type) || requirePositional(positionals, 0, "database type");
+    return requestAndPrint(client, "POST", "/api/v1/connections/request_type", parsed, io, {
+      body: { db_type: dbType },
+    });
+  }
+
+  if (command === "test") {
+    const id = firstValue(parsed.flags.connection);
+    const payload = await readData(parsed.flags, io);
+    const pathName = id
+      ? `/api/v1/connections/${encodeURIComponent(id)}/test_existing`
+      : "/api/v1/connections/test_new_connection";
+    return requestAndPrint(client, "POST", pathName, parsed, io, { body: payload });
+  }
+
+  if (command === "preview-tables") {
+    return requestAndPrint(client, "POST", "/api/v1/connections/preview_tables", parsed, io, {
+      body: await readData(parsed.flags, io),
+    });
   }
 
   throw usage(`Unknown connections command: ${command}`);
 }
 
+async function handleMetadata(client, command, positionals, parsed, io) {
+  if (command === "structure") {
+    const connectionId = firstValue(parsed.flags.connection) || requirePositional(positionals, 0, "connection id");
+    return requestAndPrint(client, "GET", `/api/v1/metadata/structure/${encodeURIComponent(connectionId)}`, parsed, io, {
+      query: { include_pii: firstValue(parsed.flags.includePii) },
+    });
+  }
+  if (command === "tables") {
+    const schemaId = requirePositional(positionals, 0, "schema id");
+    return requestAndPrint(client, "GET", `/api/v1/metadata/tables/${encodeURIComponent(schemaId)}`, parsed, io);
+  }
+  if (command === "columns") {
+    const tableId = requirePositional(positionals, 0, "table id");
+    return requestAndPrint(client, "GET", `/api/v1/metadata/columns/${encodeURIComponent(tableId)}`, parsed, io);
+  }
+  if (command === "pii-summary") {
+    const connectionId = firstValue(parsed.flags.connection) || requirePositional(positionals, 0, "connection id");
+    return requestAndPrint(client, "GET", `/api/v1/metadata/${encodeURIComponent(connectionId)}/pii/summary`, parsed, io);
+  }
+  if (command === "pii-settings") {
+    const connectionId = firstValue(parsed.flags.connection) || requirePositional(positionals, 0, "connection id");
+    return requestAndPrint(client, "PUT", `/api/v1/metadata/${encodeURIComponent(connectionId)}/pii/settings`, parsed, io, {
+      body: await readData(parsed.flags, io),
+    });
+  }
+  if (command === "detect-pii") {
+    const connectionId = firstValue(parsed.flags.connection) || requirePositional(positionals, 0, "connection id");
+    return requestAndPrint(client, "POST", `/api/v1/metadata/${encodeURIComponent(connectionId)}/pii/detect-stream`, parsed, io, {
+      body: await readData(parsed.flags, io, {}),
+      rawDefault: true,
+    });
+  }
+  throw usage(`Unknown metadata command: ${command}`);
+}
+
 async function handleQuery(client, command, positionals, parsed, io) {
-  if (command !== "run" && command !== "validate") {
-    throw usage("Expected `query run` or `query validate`");
+  if (command !== "run" && command !== "validate" && command !== "export") {
+    throw usage("Expected query run, query validate, or query export");
   }
 
   const connectionId = requirePositional(positionals, 0, "connection id");
   const sql = await readSql(parsed.flags, positionals.slice(1), io);
   const payload = queryPayload(parsed.flags, sql);
-  const result = command === "run"
-    ? await client.runQuery(connectionId, payload)
-    : await client.validateQuery(connectionId, payload);
 
-  if (command === "validate" || parsed.flags.json) {
-    write(io.stdout, formatJson(result));
-    return;
+  if (command === "validate") {
+    return requestAndPrint(client, "POST", `/api/v1/query/${encodeURIComponent(connectionId)}/validate`, parsed, io, {
+      body: payload,
+    });
   }
 
-  write(io.stdout, formatQueryResult(result, firstValue(parsed.flags.format) || "table"));
+  if (command === "export") {
+    const format = firstValue(parsed.flags.format) || "csv";
+    return requestAndPrint(client, "POST", `/api/v1/query/${encodeURIComponent(connectionId)}/export`, parsed, io, {
+      body: payload,
+      query: { format },
+      rawDefault: true,
+    });
+  }
+
+  const result = await client.request("POST", `/api/v1/query/${encodeURIComponent(connectionId)}`, { body: payload });
+  write(io.stdout, parsed.flags.json ? formatJson(result) : formatQueryResult(result, firstValue(parsed.flags.format) || "table"));
+}
+
+async function handleQueryResults(client, command, positionals, parsed, io) {
+  if (command === "get" || command === "fetch" || !command) {
+    const handle = requirePositional(positionals, 0, "result handle");
+    return requestAndPrint(client, "GET", `/api/v1/query-results/${encodeURIComponent(handle)}`, parsed, io, {
+      query: {
+        cursor: firstValue(parsed.flags.cursor),
+        limit: firstValue(parsed.flags.limit),
+      },
+    });
+  }
+  if (command === "delete") {
+    const handle = requirePositional(positionals, 0, "result handle");
+    return requestAndPrint(client, "DELETE", `/api/v1/query-results/${encodeURIComponent(handle)}`, parsed, io);
+  }
+  throw usage(`Unknown query-results command: ${command}`);
 }
 
 async function handleSavedQueries(client, command, positionals, parsed, io) {
   if (command === "list" || !command) {
-    const result = await client.listSavedQueries();
-    if (parsed.flags.json) {
-      write(io.stdout, formatJson(result));
-      return;
-    }
-    write(io.stdout, formatList(result.saved_queries || [], [
-      { key: "id", label: "ID" },
-      { key: "name", label: "Name" },
-      { key: "visibility", label: "Visibility" },
-      { key: "connection_id", label: "Connection" },
-    ]));
-    return;
+    return requestAndPrint(client, "GET", "/api/v1/saved-queries", parsed, io, {
+      tableDataKey: "saved_queries",
+      table: [
+        { key: "id", label: "ID" },
+        { key: "name", label: "Name" },
+        { key: "visibility", label: "Visibility" },
+        { key: "connection_id", label: "Connection" },
+      ],
+    });
   }
-
   if (command === "get") {
     const id = requirePositional(positionals, 0, "saved query id");
-    write(io.stdout, formatJson(await client.getSavedQuery(id)));
-    return;
+    return requestAndPrint(client, "GET", `/api/v1/saved-queries/${encodeURIComponent(id)}`, parsed, io);
   }
-
   if (command === "create") {
-    const name = firstValue(parsed.flags.name);
-    const connectionId = firstValue(parsed.flags.connection);
-    const sql = await readSql(parsed.flags, positionals, io);
-    if (!name || !connectionId) {
-      throw usage("saved-queries create requires --name and --connection");
-    }
-    const result = await client.createSavedQuery({
-      name,
+    const payload = await readData(parsed.flags, io, {
+      name: firstValue(parsed.flags.name),
       description: firstValue(parsed.flags.description),
       visibility: firstValue(parsed.flags.visibility),
-      sql,
-      connection_id: connectionId,
+      sql: await optionalSql(parsed.flags, positionals, io),
+      connection_id: firstValue(parsed.flags.connection),
     });
-    write(io.stdout, formatJson(result));
-    return;
+    return requestAndPrint(client, "POST", "/api/v1/saved-queries", parsed, io, { body: payload });
   }
-
+  if (command === "from-turn") {
+    const payload = await readData(parsed.flags, io, {
+      inquiry_turn_id: firstValue(parsed.flags.turn),
+      name: firstValue(parsed.flags.name),
+      description: firstValue(parsed.flags.description),
+      visibility: firstValue(parsed.flags.visibility),
+    });
+    return requestAndPrint(client, "POST", "/api/v1/saved-queries/from-inquiry-turn", parsed, io, { body: payload });
+  }
+  if (command === "update") {
+    const id = requirePositional(positionals, 0, "saved query id");
+    const payload = await readData(parsed.flags, io, {
+      name: firstValue(parsed.flags.name),
+      description: firstValue(parsed.flags.description),
+      visibility: firstValue(parsed.flags.visibility),
+      sql: await optionalSql(parsed.flags, positionals.slice(1), io),
+      connection_id: firstValue(parsed.flags.connection),
+    });
+    return requestAndPrint(client, "PATCH", `/api/v1/saved-queries/${encodeURIComponent(id)}`, parsed, io, { body: payload });
+  }
+  if (command === "delete") {
+    const id = requirePositional(positionals, 0, "saved query id");
+    return requestAndPrint(client, "DELETE", `/api/v1/saved-queries/${encodeURIComponent(id)}`, parsed, io);
+  }
+  if (command === "approve" || command === "unapprove") {
+    const id = requirePositional(positionals, 0, "saved query id");
+    const method = command === "approve" ? "POST" : "DELETE";
+    return requestAndPrint(client, method, `/api/v1/saved-queries/${encodeURIComponent(id)}/approve`, parsed, io);
+  }
   if (command === "execute") {
     const id = requirePositional(positionals, 0, "saved query id");
-    const result = await client.executeSavedQuery(id, {
-      params: parseJsonFlag(firstValue(parsed.flags.params), "params"),
-      row_limit: parseInteger(firstValue(parsed.flags.rowLimit), 1000),
-      timeout: parseInteger(firstValue(parsed.flags.timeout), 30),
+    const result = await client.request("POST", `/api/v1/saved-queries/${encodeURIComponent(id)}/execute`, {
+      body: {
+        params: parseJsonFlag(firstValue(parsed.flags.params), "params"),
+        row_limit: parseInteger(firstValue(parsed.flags.rowLimit), 1000),
+        timeout: parseInteger(firstValue(parsed.flags.timeout), 30),
+      },
     });
     write(io.stdout, parsed.flags.json ? formatJson(result) : formatQueryResult(result, firstValue(parsed.flags.format) || "table"));
     return;
   }
-
   throw usage(`Unknown saved-queries command: ${command}`);
 }
 
-async function handleInquiry(client, command, positionals, parsed, io) {
-  if (command !== "ask") {
-    throw usage("Expected `inquiry ask`");
+async function handleSemantic(client, command, positionals, parsed, io) {
+  const resource = command;
+  if (!SEMANTIC_RESOURCES.has(resource)) {
+    throw usage(`Expected semantic resource: ${Array.from(SEMANTIC_RESOURCES).join(", ")}`);
   }
 
-  const question = firstValue(parsed.flags.question) || positionals.join(" ");
+  const [verb = "list", idOrRest, ...rest] = positionals;
+  const base = `/api/v1/semantic/${resource}`;
   const connectionId = firstValue(parsed.flags.connection);
-  if (!question.trim()) {
-    throw usage("inquiry ask requires a question");
-  }
+  const itemName = resource.replace(/s$/, "");
+  const query = { connection_id: connectionId };
 
-  let sessionId = firstValue(parsed.flags.session);
-  if (!sessionId) {
-    if (!connectionId) {
-      throw usage("inquiry ask requires --connection when --session is not provided");
-    }
-    const session = await client.createInquirySession({
-      connection_id: connectionId,
-      model: firstValue(parsed.flags.model),
+  if (verb === "list") {
+    requireConnection(connectionId, `semantic ${resource} list`);
+    return requestAndPrint(client, "GET", base, parsed, io, {
+      query,
+      tableDataKey: resource,
+      table: [
+        { key: "id", label: "ID" },
+        { key: "name", label: "Name" },
+        { key: "entity", label: "Entity" },
+        { key: "description", label: "Description" },
+      ],
     });
-    sessionId = session.session_id;
+  }
+  if (verb === "get") {
+    const id = requirePositional([idOrRest], 0, `${itemName} id`);
+    return requestAndPrint(client, "GET", `${base}/${encodeURIComponent(id)}`, parsed, io, { query });
+  }
+  if (verb === "create") {
+    requireConnection(connectionId, `semantic ${resource} create`);
+    return requestAndPrint(client, "POST", base, parsed, io, {
+      query,
+      body: await semanticPayload(resource, parsed.flags, [idOrRest, ...rest].filter(Boolean), io),
+    });
+  }
+  if (verb === "update") {
+    requireConnection(connectionId, `semantic ${resource} update`);
+    const id = requirePositional([idOrRest], 0, `${itemName} id`);
+    return requestAndPrint(client, "PUT", `${base}/${encodeURIComponent(id)}`, parsed, io, {
+      query,
+      body: await semanticPayload(resource, parsed.flags, rest, io),
+    });
+  }
+  if (verb === "delete") {
+    requireConnection(connectionId, `semantic ${resource} delete`);
+    const id = requirePositional([idOrRest], 0, `${itemName} id`);
+    return requestAndPrint(client, "DELETE", `${base}/${encodeURIComponent(id)}`, parsed, io, { query });
+  }
+  if (verb === "delete-all") {
+    requireConnection(connectionId, `semantic ${resource} delete-all`);
+    return requestAndPrint(client, "DELETE", `${base}/all`, parsed, io, { query });
+  }
+  if (verb === "generate") {
+    requireConnection(connectionId, `semantic ${resource} generate`);
+    return requestAndPrint(client, "POST", `${base}/generate/stream`, parsed, io, {
+      body: await readData(parsed.flags, io, {
+        connection_id: connectionId,
+        prompt: firstValue(parsed.flags.prompt),
+        model: firstValue(parsed.flags.model),
+        options: parseJsonFlag(firstValue(parsed.flags.options), "options"),
+      }),
+      rawDefault: true,
+    });
   }
 
-  const result = await client.runInquiryTurnSync(sessionId, { user_input: question });
-  if (parsed.flags.json) {
-    write(io.stdout, formatJson({ session_id: sessionId, ...result }));
+  throw usage(`Unknown semantic ${resource} command: ${verb}`);
+}
+
+async function handleInquiry(client, command, positionals, parsed, io) {
+  if (command === "ask") {
+    const question = firstValue(parsed.flags.question) || positionals.join(" ");
+    const connectionId = firstValue(parsed.flags.connection);
+    if (!question.trim()) throw usage("inquiry ask requires a question");
+
+    let sessionId = firstValue(parsed.flags.session);
+    if (!sessionId) {
+      if (!connectionId) throw usage("inquiry ask requires --connection when --session is not provided");
+      const session = await client.request("POST", "/api/v1/inquiry/sessions", {
+        body: { connection_id: connectionId, model: firstValue(parsed.flags.model) },
+      });
+      sessionId = session.session_id;
+    }
+
+    const result = await client.request("POST", `/api/v1/inquiry/sessions/${encodeURIComponent(sessionId)}/sync`, {
+      body: { user_input: question },
+    });
+    if (parsed.flags.json) {
+      write(io.stdout, formatJson({ session_id: sessionId, ...result }));
+      return;
+    }
+    write(io.stdout, `${result.final_response}\n`);
+    if (result.sql_queries && result.sql_queries.length > 0) {
+      write(io.stdout, "\nSQL:\n");
+      for (const sql of result.sql_queries) write(io.stdout, `${sql}\n`);
+    }
     return;
   }
 
-  write(io.stdout, `${result.final_response}\n`);
-  if (result.sql_queries && result.sql_queries.length > 0) {
-    write(io.stdout, "\nSQL:\n");
-    for (const sql of result.sql_queries) {
-      write(io.stdout, `${sql}\n`);
-    }
+  if (command === "sessions" || command === "list") {
+    return requestAndPrint(client, "GET", "/api/v1/inquiry/sessions", parsed, io, {
+      query: {
+        connection_id: firstValue(parsed.flags.connection),
+        status: firstValue(parsed.flags.status),
+        limit: firstValue(parsed.flags.limit),
+        offset: firstValue(parsed.flags.offset),
+      },
+      table: [
+        { key: "id", label: "ID" },
+        { key: "connection_id", label: "Connection" },
+        { key: "status", label: "Status" },
+        { key: "turn_count", label: "Turns" },
+      ],
+    });
   }
+
+  if (command === "create-session") {
+    return requestAndPrint(client, "POST", "/api/v1/inquiry/sessions", parsed, io, {
+      body: await readData(parsed.flags, io, {
+        connection_id: firstValue(parsed.flags.connection),
+        model: firstValue(parsed.flags.model),
+      }),
+    });
+  }
+
+  if (command === "session") {
+    const id = requirePositional(positionals, 0, "session id");
+    return requestAndPrint(client, "GET", `/api/v1/inquiry/sessions/${encodeURIComponent(id)}`, parsed, io);
+  }
+
+  if (command === "update-session") {
+    const id = requirePositional(positionals, 0, "session id");
+    return requestAndPrint(client, "PATCH", `/api/v1/inquiry/sessions/${encodeURIComponent(id)}`, parsed, io, {
+      body: await readData(parsed.flags, io, {
+        status: firstValue(parsed.flags.status),
+        thread_summary: firstValue(parsed.flags.summary),
+      }),
+    });
+  }
+
+  if (command === "delete-session") {
+    const id = requirePositional(positionals, 0, "session id");
+    return requestAndPrint(client, "DELETE", `/api/v1/inquiry/sessions/${encodeURIComponent(id)}`, parsed, io);
+  }
+
+  if (command === "turn") {
+    const sessionId = requirePositional(positionals, 0, "session id");
+    const turnId = requirePositional(positionals, 1, "turn id");
+    return requestAndPrint(client, "GET", `/api/v1/inquiry/sessions/${encodeURIComponent(sessionId)}/turns/${encodeURIComponent(turnId)}`, parsed, io);
+  }
+
+  throw usage(`Unknown inquiry command: ${command}`);
+}
+
+async function handleGeneration(client, command, positionals, parsed, io) {
+  const base = "/api/v1/semantic/jobs";
+  if (command === "start" || command === "create") {
+    return requestAndPrint(client, "POST", base, parsed, io, {
+      body: await readData(parsed.flags, io),
+    });
+  }
+  if (command === "list" || !command) {
+    return requestAndPrint(client, "GET", base, parsed, io, {
+      query: { connection_id: firstValue(parsed.flags.connection) },
+    });
+  }
+  const jobId = requirePositional(positionals, 0, "job id");
+  if (command === "get") return requestAndPrint(client, "GET", `${base}/${encodeURIComponent(jobId)}`, parsed, io);
+  if (command === "status") return requestAndPrint(client, "GET", `${base}/${encodeURIComponent(jobId)}/status`, parsed, io);
+  if (command === "stream") return requestAndPrint(client, "GET", `${base}/${encodeURIComponent(jobId)}/stream`, parsed, io, { rawDefault: true });
+  if (command === "cancel") return requestAndPrint(client, "POST", `${base}/${encodeURIComponent(jobId)}/cancel`, parsed, io);
+  if (command === "questions") return requestAndPrint(client, "GET", `${base}/${encodeURIComponent(jobId)}/questions`, parsed, io);
+  if (command === "guidance") return requestAndPrint(client, "POST", `${base}/${encodeURIComponent(jobId)}/guidance`, parsed, io, { body: await readData(parsed.flags, io) });
+  if (command === "delete") return requestAndPrint(client, "DELETE", `${base}/${encodeURIComponent(jobId)}`, parsed, io);
+  throw usage(`Unknown generation command: ${command}`);
+}
+
+async function handleTiles(client, command, positionals, parsed, io) {
+  if (command === "list" || !command) {
+    return requestAndPrint(client, "GET", "/api/v1/tiles", parsed, io, {
+      query: { dashboard_id: firstValue(parsed.flags.dashboard) },
+      tableDataKey: "tiles",
+      table: [
+        { key: "id", label: "ID" },
+        { key: "title", label: "Title" },
+        { key: "source_type", label: "Source" },
+        { key: "visibility", label: "Visibility" },
+      ],
+    });
+  }
+  if (command === "get") {
+    const id = requirePositional(positionals, 0, "tile id");
+    return requestAndPrint(client, "GET", `/api/v1/tiles/${encodeURIComponent(id)}`, parsed, io);
+  }
+  if (command === "create") {
+    return requestAndPrint(client, "POST", "/api/v1/tiles", parsed, io, {
+      body: await readData(parsed.flags, io, {
+        title: firstValue(parsed.flags.title) || firstValue(parsed.flags.name),
+        description: firstValue(parsed.flags.description),
+        visibility: firstValue(parsed.flags.visibility),
+        source_type: firstValue(parsed.flags.sourceType),
+        source_ref: firstValue(parsed.flags.source),
+        visualization: parseJsonFlag(firstValue(parsed.flags.visualization), "visualization"),
+      }),
+    });
+  }
+  if (command === "update") {
+    const id = requirePositional(positionals, 0, "tile id");
+    return requestAndPrint(client, "PATCH", `/api/v1/tiles/${encodeURIComponent(id)}`, parsed, io, {
+      body: await readData(parsed.flags, io, {
+        title: firstValue(parsed.flags.title) || firstValue(parsed.flags.name),
+        description: firstValue(parsed.flags.description),
+        visibility: firstValue(parsed.flags.visibility),
+        visualization: parseJsonFlag(firstValue(parsed.flags.visualization), "visualization"),
+      }),
+    });
+  }
+  if (command === "data") {
+    const id = requirePositional(positionals, 0, "tile id");
+    return requestAndPrint(client, "POST", `/api/v1/tiles/${encodeURIComponent(id)}/data`, parsed, io, {
+      body: await readData(parsed.flags, io, { filters: parseJsonFlag(firstValue(parsed.flags.filters), "filters") }),
+    });
+  }
+  if (command === "delete") {
+    const id = requirePositional(positionals, 0, "tile id");
+    return requestAndPrint(client, "DELETE", `/api/v1/tiles/${encodeURIComponent(id)}`, parsed, io);
+  }
+  throw usage(`Unknown tiles command: ${command}`);
+}
+
+async function handleDashboards(client, command, positionals, parsed, io) {
+  if (command === "list" || !command) {
+    return requestAndPrint(client, "GET", "/api/v1/dashboards", parsed, io, {
+      tableDataKey: "dashboards",
+      table: [
+        { key: "id", label: "ID" },
+        { key: "title", label: "Title" },
+        { key: "visibility", label: "Visibility" },
+        { key: "updated_at", label: "Updated" },
+      ],
+    });
+  }
+  if (command === "get" || command === "manifest" || command === "saved-queries") {
+    const id = requirePositional(positionals, 0, "dashboard id");
+    const suffix = command === "get" ? "" : `/${command}`;
+    return requestAndPrint(client, "GET", `/api/v1/dashboards/${encodeURIComponent(id)}${suffix}`, parsed, io);
+  }
+  if (command === "create") {
+    return requestAndPrint(client, "POST", "/api/v1/dashboards", parsed, io, {
+      body: await readData(parsed.flags, io, {
+        title: firstValue(parsed.flags.title) || firstValue(parsed.flags.name),
+        description: firstValue(parsed.flags.description),
+        visibility: firstValue(parsed.flags.visibility),
+        default_filters: parseJsonFlag(firstValue(parsed.flags.filters), "filters"),
+      }),
+    });
+  }
+  if (command === "update") {
+    const id = requirePositional(positionals, 0, "dashboard id");
+    return requestAndPrint(client, "PATCH", `/api/v1/dashboards/${encodeURIComponent(id)}`, parsed, io, {
+      body: await readData(parsed.flags, io, {
+        title: firstValue(parsed.flags.title) || firstValue(parsed.flags.name),
+        description: firstValue(parsed.flags.description),
+        visibility: firstValue(parsed.flags.visibility),
+        default_filters: parseJsonFlag(firstValue(parsed.flags.filters), "filters"),
+      }),
+    });
+  }
+  if (command === "delete" || command === "duplicate") {
+    const id = requirePositional(positionals, 0, "dashboard id");
+    const method = command === "delete" ? "DELETE" : "POST";
+    const suffix = command === "delete" ? "" : "/duplicate";
+    return requestAndPrint(client, method, `/api/v1/dashboards/${encodeURIComponent(id)}${suffix}`, parsed, io);
+  }
+  if (command === "tile-data") {
+    const dashboardId = requirePositional(positionals, 0, "dashboard id");
+    const tileId = requirePositional(positionals, 1, "tile id");
+    return requestAndPrint(client, "POST", `/api/v1/dashboards/${encodeURIComponent(dashboardId)}/tiles/${encodeURIComponent(tileId)}/data`, parsed, io, {
+      body: await readData(parsed.flags, io, {
+        filters: parseJsonFlag(firstValue(parsed.flags.filters), "filters"),
+        pagination: paginationPayload(parsed.flags),
+        result_handle: firstValue(parsed.flags.resultHandle),
+      }),
+    });
+  }
+  if (command === "attach-tile") {
+    const dashboardId = requirePositional(positionals, 0, "dashboard id");
+    return requestAndPrint(client, "POST", `/api/v1/dashboards/${encodeURIComponent(dashboardId)}/tiles`, parsed, io, {
+      body: await readData(parsed.flags, io, {
+        tile_id: firstValue(parsed.flags.tile),
+        position: positionPayload(parsed.flags),
+      }),
+    });
+  }
+  if (command === "move-tile") {
+    const dashboardId = requirePositional(positionals, 0, "dashboard id");
+    const tileId = requirePositional(positionals, 1, "tile id");
+    return requestAndPrint(client, "PATCH", `/api/v1/dashboards/${encodeURIComponent(dashboardId)}/tiles/${encodeURIComponent(tileId)}`, parsed, io, {
+      body: await readData(parsed.flags, io, { position: positionPayload(parsed.flags) }),
+    });
+  }
+  if (command === "detach-tile") {
+    const dashboardId = requirePositional(positionals, 0, "dashboard id");
+    const tileId = requirePositional(positionals, 1, "tile id");
+    return requestAndPrint(client, "DELETE", `/api/v1/dashboards/${encodeURIComponent(dashboardId)}/tiles/${encodeURIComponent(tileId)}`, parsed, io);
+  }
+  if (command === "assignments") {
+    const id = requirePositional(positionals, 0, "dashboard id");
+    return requestAndPrint(client, "GET", `/api/v1/dashboards/${encodeURIComponent(id)}/assignments`, parsed, io);
+  }
+  if (command === "assign") {
+    const id = requirePositional(positionals, 0, "dashboard id");
+    return requestAndPrint(client, "POST", `/api/v1/dashboards/${encodeURIComponent(id)}/assignments`, parsed, io, {
+      body: await readData(parsed.flags, io, {
+        user_id: firstValue(parsed.flags.user),
+        email: firstValue(parsed.flags.email),
+      }),
+    });
+  }
+  if (command === "unassign") {
+    const dashboardId = requirePositional(positionals, 0, "dashboard id");
+    const userId = firstValue(parsed.flags.user) || requirePositional(positionals, 1, "user id");
+    return requestAndPrint(client, "DELETE", `/api/v1/dashboards/${encodeURIComponent(dashboardId)}/assignments/${encodeURIComponent(userId)}`, parsed, io);
+  }
+  throw usage(`Unknown dashboards command: ${command}`);
+}
+
+async function handleDocuments(client, command, positionals, parsed, io) {
+  if (command === "list" || !command) {
+    return requestAndPrint(client, "GET", "/api/v1/context-documents/", parsed, io, {
+      query: { limit: firstValue(parsed.flags.limit), offset: firstValue(parsed.flags.offset) },
+      table: [
+        { key: "id", label: "ID" },
+        { key: "title", label: "Title" },
+        { key: "document_type", label: "Type" },
+        { key: "created_at", label: "Created" },
+      ],
+    });
+  }
+  if (command === "upload") {
+    const file = firstValue(parsed.flags.file) || requirePositional(positionals, 0, "document file");
+    return requestAndPrint(client, "POST", "/api/v1/context-documents/upload", parsed, io, {
+      body: multipart({
+        file,
+        fields: {
+          title: firstValue(parsed.flags.title) || firstValue(parsed.flags.name) || path.basename(file),
+          description: firstValue(parsed.flags.description),
+        },
+      }),
+    });
+  }
+  if (command === "get" || command === "connections") {
+    const id = requirePositional(positionals, 0, "document id");
+    const suffix = command === "connections" ? "/connections" : "";
+    return requestAndPrint(client, "GET", `/api/v1/context-documents/${encodeURIComponent(id)}${suffix}`, parsed, io);
+  }
+  if (command === "update") {
+    const id = requirePositional(positionals, 0, "document id");
+    return requestAndPrint(client, "PATCH", `/api/v1/context-documents/${encodeURIComponent(id)}`, parsed, io, {
+      body: await readData(parsed.flags, io, {
+        title: firstValue(parsed.flags.title) || firstValue(parsed.flags.name),
+        description: firstValue(parsed.flags.description),
+      }),
+    });
+  }
+  if (command === "delete") {
+    const id = requirePositional(positionals, 0, "document id");
+    return requestAndPrint(client, "DELETE", `/api/v1/context-documents/${encodeURIComponent(id)}`, parsed, io);
+  }
+  if (command === "link") {
+    const id = requirePositional(positionals, 0, "document id");
+    const connectionId = firstValue(parsed.flags.connection) || requirePositional(positionals, 1, "connection id");
+    return requestAndPrint(client, "POST", `/api/v1/context-documents/${encodeURIComponent(id)}/link`, parsed, io, {
+      body: { connection_id: connectionId },
+    });
+  }
+  if (command === "unlink") {
+    const id = requirePositional(positionals, 0, "document id");
+    const connectionId = firstValue(parsed.flags.connection) || requirePositional(positionals, 1, "connection id");
+    return requestAndPrint(client, "DELETE", `/api/v1/context-documents/${encodeURIComponent(id)}/link/${encodeURIComponent(connectionId)}`, parsed, io);
+  }
+  if (command === "for-connection") {
+    const connectionId = firstValue(parsed.flags.connection) || requirePositional(positionals, 0, "connection id");
+    return requestAndPrint(client, "GET", `/api/v1/context-documents/connections/${encodeURIComponent(connectionId)}/documents`, parsed, io);
+  }
+  throw usage(`Unknown documents command: ${command}`);
+}
+
+async function handleBranding(client, command, positionals, parsed, io) {
+  if (command === "get" || !command) {
+    return requestAndPrint(client, "GET", "/api/v1/branding", parsed, io);
+  }
+  if (command === "update") {
+    return requestAndPrint(client, "PATCH", "/api/v1/branding", parsed, io, {
+      body: await readData(parsed.flags, io),
+    });
+  }
+  if (command === "upload") {
+    const file = firstValue(parsed.flags.file) || requirePositional(positionals, 0, "asset file");
+    return requestAndPrint(client, "POST", "/api/v1/branding/assets", parsed, io, {
+      body: multipart({ file }),
+    });
+  }
+  if (command === "extract") {
+    const file = firstValue(parsed.flags.file) || requirePositional(positionals, 0, "design file");
+    return requestAndPrint(client, "POST", "/api/v1/branding/extract", parsed, io, {
+      body: multipart({ file }),
+    });
+  }
+  if (command === "asset") {
+    const name = requirePositional(positionals, 0, "asset name");
+    return requestAndPrint(client, "GET", `/api/v1/branding/assets/${encodeURIComponent(name)}`, parsed, io, { rawDefault: true });
+  }
+  throw usage(`Unknown branding command: ${command}`);
+}
+
+async function handleUploads(client, command, positionals, parsed, io) {
+  if (command !== "csv" && command !== "duckdb") {
+    throw usage("Expected uploads csv or uploads duckdb");
+  }
+
+  const base = `/api/v1/${command}`;
+  const action = positionals[0] || "upload";
+  if (action === "upload") {
+    const file = firstValue(parsed.flags.file) || requirePositional(positionals, 1, "file");
+    const fields = Object.fromEntries(allValues(parsed.flags.form).map((item) => parsePair(item, "--form")));
+    return requestAndPrint(client, "POST", `${base}/upload`, parsed, io, {
+      body: multipart({ file, fields }),
+    });
+  }
+  if (action === "status") {
+    const id = firstValue(parsed.flags.connection) || requirePositional(positionals, 1, "connection id");
+    return requestAndPrint(client, "GET", `${base}/${encodeURIComponent(id)}/processing-status`, parsed, io);
+  }
+  if (command === "csv" && action === "reprocess") {
+    const id = firstValue(parsed.flags.connection) || requirePositional(positionals, 1, "connection id");
+    return requestAndPrint(client, "POST", `${base}/${encodeURIComponent(id)}/reprocess`, parsed, io);
+  }
+  throw usage(`Unknown uploads ${command} command: ${action}`);
+}
+
+async function handleChains(client, command, positionals, parsed, io) {
+  if (command === "list" || !command) {
+    return requestAndPrint(client, "GET", "/api/v1/chains/", parsed, io, {
+      query: { limit: firstValue(parsed.flags.limit) },
+    });
+  }
+  if (command === "answers") {
+    const id = requirePositional(positionals, 0, "chain id");
+    return requestAndPrint(client, "GET", `/api/v1/chains/${encodeURIComponent(id)}/answers`, parsed, io, {
+      query: { limit: firstValue(parsed.flags.limit) },
+    });
+  }
+  throw usage(`Unknown chains command: ${command}`);
+}
+
+async function handleUsers(client, command, positionals, parsed, io) {
+  if (command === "me" || !command) return requestAndPrint(client, "GET", "/api/v1/users/me", parsed, io);
+  if (command === "update-me") return requestAndPrint(client, "PUT", "/api/v1/users/me", parsed, io, { body: await readData(parsed.flags, io) });
+  if (command === "list") return requestAndPrint(client, "GET", "/api/v1/users/", parsed, io);
+  if (command === "get") {
+    const id = requirePositional(positionals, 0, "user id");
+    return requestAndPrint(client, "GET", `/api/v1/users/${encodeURIComponent(id)}`, parsed, io);
+  }
+  if (command === "update") {
+    const id = requirePositional(positionals, 0, "user id");
+    return requestAndPrint(client, "PUT", `/api/v1/users/${encodeURIComponent(id)}`, parsed, io, { body: await readData(parsed.flags, io) });
+  }
+  throw usage(`Unknown users command: ${command}`);
+}
+
+async function handleOrganization(client, command, positionals, parsed, io) {
+  if (command === "me" || !command) return requestAndPrint(client, "GET", "/api/v1/organizations/me", parsed, io);
+  if (command === "usage") return requestAndPrint(client, "GET", "/api/v1/organizations/me/usage", parsed, io);
+  if (command === "update") {
+    const id = requirePositional(positionals, 0, "organization id");
+    return requestAndPrint(client, "PUT", `/api/v1/organizations/${encodeURIComponent(id)}/details`, parsed, io, { body: await readData(parsed.flags, io) });
+  }
+  if (command === "invite") {
+    const id = requirePositional(positionals, 0, "organization id");
+    return requestAndPrint(client, "POST", `/api/v1/organizations/${encodeURIComponent(id)}/invite_member`, parsed, io, { body: await readData(parsed.flags, io) });
+  }
+  if (command === "deployment") {
+    const id = requirePositional(positionals, 0, "organization id");
+    return requestAndPrint(client, "GET", `/api/v1/organizations/${encodeURIComponent(id)}/deployment`, parsed, io);
+  }
+  if (command === "deploy") {
+    const id = requirePositional(positionals, 0, "organization id");
+    return requestAndPrint(client, "POST", `/api/v1/organizations/${encodeURIComponent(id)}/deployment`, parsed, io, { body: await readData(parsed.flags, io) });
+  }
+  if (command === "delete-deployment") {
+    const id = requirePositional(positionals, 0, "organization id");
+    return requestAndPrint(client, "DELETE", `/api/v1/organizations/${encodeURIComponent(id)}/deployment`, parsed, io);
+  }
+  throw usage(`Unknown org command: ${command}`);
+}
+
+async function handleRoles(client, command, positionals, parsed, io) {
+  if (command === "list" || !command) return requestAndPrint(client, "GET", "/api/v1/roles/", parsed, io);
+  if (command === "create") return requestAndPrint(client, "POST", "/api/v1/roles/", parsed, io, { body: await readData(parsed.flags, io) });
+  if (command === "get") {
+    const id = requirePositional(positionals, 0, "role id");
+    return requestAndPrint(client, "GET", `/api/v1/roles/${encodeURIComponent(id)}`, parsed, io);
+  }
+  if (command === "assign") {
+    const roleId = requirePositional(positionals, 0, "role id");
+    const userId = firstValue(parsed.flags.user) || requirePositional(positionals, 1, "user id");
+    return requestAndPrint(client, "POST", `/api/v1/roles/${encodeURIComponent(roleId)}/users/${encodeURIComponent(userId)}`, parsed, io);
+  }
+  if (command === "unassign") {
+    const roleId = requirePositional(positionals, 0, "role id");
+    const userId = firstValue(parsed.flags.user) || requirePositional(positionals, 1, "user id");
+    return requestAndPrint(client, "DELETE", `/api/v1/roles/${encodeURIComponent(roleId)}/users/${encodeURIComponent(userId)}`, parsed, io);
+  }
+  if (command === "sync-clerk") return requestAndPrint(client, "POST", "/api/v1/roles/sync_clerk_role", parsed, io, { body: await readData(parsed.flags, io) });
+  throw usage(`Unknown roles command: ${command}`);
+}
+
+async function handleBilling(client, command, positionals, parsed, io) {
+  const billingPaths = {
+    status: ["GET", "/api/v1/billing/status"],
+    plans: ["GET", "/api/v1/billing/plans"],
+    products: ["GET", "/api/v1/billing/billing-products"],
+    history: ["GET", "/api/v1/billing/history"],
+    "financial-history": ["GET", "/api/v1/billing/financial-history"],
+    "usage-trends": ["GET", "/api/v1/billing/usage/trends"],
+    sync: ["POST", "/api/v1/billing/sync"],
+    checkout: ["POST", "/api/v1/billing/checkout-session"],
+    portal: ["POST", "/api/v1/billing/customer-portal-session"],
+  };
+  if (command === "prices") {
+    const planId = requirePositional(positionals, 0, "plan id");
+    return requestAndPrint(client, "GET", `/api/v1/billing/plans/${encodeURIComponent(planId)}/prices`, parsed, io);
+  }
+  const entry = billingPaths[command || "status"];
+  if (entry) {
+    const [method, pathName] = entry;
+    const body = method === "GET" ? undefined : await readData(parsed.flags, io, {});
+    return requestAndPrint(client, method, pathName, parsed, io, {
+      query: {
+        limit: firstValue(parsed.flags.limit),
+        offset: firstValue(parsed.flags.offset),
+        days: firstValue(parsed.flags.days),
+      },
+      body,
+    });
+  }
+  throw usage(`Unknown billing command: ${command}`);
+}
+
+async function handleStats(client, command, parsed, io) {
+  if (command === "answers" || !command) return requestAndPrint(client, "GET", "/api/v1/answer_stats/", parsed, io);
+  if (command === "connections") return requestAndPrint(client, "GET", "/api/v1/connection_stats/", parsed, io);
+  throw usage(`Unknown stats command: ${command}`);
 }
 
 function queryPayload(flags, sql) {
   return {
     query: sql,
-    params: parseJsonFlag(firstValue(flags.params), "params"),
+    params: parseJsonFlag(firstValue(flags.params), "params") ?? null,
     row_limit: parseInteger(firstValue(flags.rowLimit), 1000),
     timeout: parseInteger(firstValue(flags.timeout), 30),
   };
+}
+
+async function semanticPayload(resource, flags, positionals, io) {
+  const common = {
+    name: firstValue(flags.name) || positionals.join(" ") || undefined,
+    description: firstValue(flags.description),
+    entity: firstValue(flags.entity),
+    source_table: firstValue(flags.sourceTable),
+    identifier: firstValue(flags.identifier),
+    temporal_key: firstValue(flags.temporalKey),
+    expression: firstValue(flags.expression),
+    type: firstValue(flags.type),
+    sql: firstValue(flags.sql),
+    filters: parseJsonFlag(firstValue(flags.filters), "filters"),
+  };
+
+  if (resource === "relationships") {
+    Object.assign(common, {
+      from_entity: firstValue(flags.from),
+      to_entity: firstValue(flags.to),
+      relationship_type: firstValue(flags.relationshipType),
+      join_condition: firstValue(flags.join),
+    });
+  }
+
+  return readData(flags, io, common);
 }
 
 async function readSql(flags, positionals, io) {
   const sql = firstValue(flags.sql);
   const file = firstValue(flags.file);
 
-  if (sql) {
-    return sql;
-  }
-
-  if (file) {
-    return fs.readFileSync(file, "utf8");
-  }
-
-  if (positionals.length > 0) {
-    return positionals.join(" ");
-  }
-
-  if (!io.stdin.isTTY) {
-    return await readAll(io.stdin);
-  }
-
+  if (sql) return sql;
+  if (file) return fs.readFileSync(file, "utf8");
+  if (positionals.length > 0) return positionals.join(" ");
+  if (!io.stdin.isTTY) return await readAll(io.stdin);
   throw usage("SQL is required. Pass --sql, --file, a positional SQL string, or stdin.");
 }
 
-async function buildApiBody(flags, io) {
-  const formEntries = allValues(flags.form);
-  const uploadEntries = allValues(flags.file);
-  if (formEntries.length > 0 || uploadEntries.length > 0) {
-    const form = new FormData();
-    for (const [key, value] of Object.entries(parsePairFlags(formEntries, "--form"))) {
-      if (Array.isArray(value)) {
-        for (const item of value) {
-          form.append(key, item);
-        }
-      } else {
-        form.append(key, value);
-      }
-    }
-    for (const spec of uploadEntries) {
-      const [field, filePath] = parsePair(spec, "--file");
-      const buffer = fs.readFileSync(filePath);
-      form.append(field, new Blob([buffer]), path.basename(filePath));
-    }
-    return form;
+async function optionalSql(flags, positionals, io) {
+  if (firstValue(flags.sql) || firstValue(flags.file) || positionals.length > 0) {
+    return readSql(flags, positionals, io);
   }
-
-  const rawBody = Boolean(flags.rawBody);
-  const body = firstValue(flags.body);
-  if (body !== undefined) {
-    return rawBody ? body : parseJsonFlag(body, "body");
-  }
-
-  const bodyFile = firstValue(flags.bodyFile);
-  if (bodyFile) {
-    const text = fs.readFileSync(bodyFile, "utf8");
-    return rawBody ? text : parseJsonFlag(text, "body-file");
-  }
-
-  if (!io.stdin.isTTY) {
-    const text = await readAll(io.stdin);
-    if (text.length > 0) {
-      return rawBody ? text : parseJsonFlag(text, "stdin");
-    }
-  }
-
   return undefined;
+}
+
+async function readData(flags, io, defaults = {}) {
+  const file = firstValue(flags.dataFile);
+  const inline = firstValue(flags.data);
+  let data = {};
+
+  if (file) {
+    data = parseJsonFlag(fs.readFileSync(file, "utf8"), "data-file");
+  } else if (inline) {
+    data = parseJsonFlag(inline, "data");
+  } else if (!io.stdin.isTTY) {
+    const text = await readAll(io.stdin);
+    if (text.trim()) data = parseJsonFlag(text, "stdin");
+  }
+
+  return dropUndefined({ ...defaults, ...data });
+}
+
+function multipart({ file, fields = {} }) {
+  const form = new FormData();
+  for (const [key, value] of Object.entries(dropUndefined(fields))) {
+    form.append(key, String(value));
+  }
+  const buffer = fs.readFileSync(file);
+  form.append("file", new Blob([buffer]), path.basename(file));
+  return form;
+}
+
+function positionPayload(flags) {
+  const payload = {
+    x: parseInteger(firstValue(flags.x), undefined),
+    y: parseInteger(firstValue(flags.y), undefined),
+    w: parseInteger(firstValue(flags.w), undefined),
+    h: parseInteger(firstValue(flags.h), undefined),
+  };
+  return dropUndefined(payload);
+}
+
+function paginationPayload(flags) {
+  const payload = {
+    limit: parseInteger(firstValue(flags.limit), undefined),
+    cursor: firstValue(flags.cursor),
+  };
+  const clean = dropUndefined(payload);
+  return Object.keys(clean).length > 0 ? clean : undefined;
+}
+
+async function requestAndPrint(client, method, pathName, parsed, io, options = {}) {
+  const result = await client.rawRequest(method, pathName, {
+    auth: options.auth ?? true,
+    query: options.query,
+    body: options.body,
+    headers: options.headers,
+  });
+
+  const output = firstValue(parsed.flags.output);
+  if (output) {
+    fs.writeFileSync(output, result.buffer);
+    write(io.stdout, `Wrote ${result.buffer.length} bytes to ${output}\n`);
+    return;
+  }
+
+  if (parsed.flags.include) {
+    write(io.stdout, `HTTP ${result.status}\n`);
+    for (const [key, value] of Object.entries(result.headers)) write(io.stdout, `${key}: ${value}\n`);
+    write(io.stdout, "\n");
+  }
+
+  if (parsed.flags.raw || options.rawDefault) {
+    io.stdout.write(result.buffer);
+    if (result.buffer.length > 0 && result.buffer[result.buffer.length - 1] !== 10) write(io.stdout, "\n");
+    return;
+  }
+
+  if (result.data === null) {
+    write(io.stdout, parsed.flags.json ? "null\n" : `${options.okText || "ok"}\n`);
+    return;
+  }
+
+  if (!parsed.flags.json && options.table) {
+    const rows = options.tableDataKey ? result.data[options.tableDataKey] : result.data;
+    if (Array.isArray(rows)) {
+      write(io.stdout, formatList(rows, options.table));
+      return;
+    }
+  }
+
+  if (typeof result.data === "object" || parsed.flags.json) {
+    write(io.stdout, formatJson(result.data));
+    return;
+  }
+
+  write(io.stdout, result.text.endsWith("\n") ? result.text : `${result.text}\n`);
 }
 
 function parseArgs(argv) {
@@ -339,10 +1101,7 @@ function parseArgs(argv) {
     index += 1;
   }
 
-  if (flags.help) {
-    positionals.unshift("help");
-  }
-
+  if (flags.help) positionals.unshift("help");
   return { flags, positionals };
 }
 
@@ -352,124 +1111,88 @@ function normalizeFlagName(rawName) {
     "--help": "help",
     "--base-url": "baseUrl",
     "--api-key": "apiKey",
-    "--row-limit": "rowLimit",
-    "--sql": "sql",
-    "-q": "sql",
-    "--file": "file",
-    "-f": "file",
-    "--format": "format",
-    "--params": "params",
-    "--timeout": "timeout",
+    "--json": "json",
+    "--include": "include",
+    "-i": "include",
+    "--output": "output",
+    "-o": "output",
+    "--raw": "raw",
+    "--data": "data",
+    "--data-file": "dataFile",
+    "--body": "data",
+    "--body-file": "dataFile",
     "--name": "name",
+    "--title": "title",
     "--description": "description",
     "--visibility": "visibility",
     "--connection": "connection",
-    "--session": "session",
+    "--type": "type",
+    "--db-type": "dbType",
+    "--config": "config",
+    "--file": "file",
+    "-f": "file",
+    "--sql": "sql",
+    "-q": "sql",
+    "--params": "params",
+    "--row-limit": "rowLimit",
+    "--timeout": "timeout",
+    "--format": "format",
+    "--scope": "scope",
+    "--admin": "admin",
+    "--expires-at": "expiresAt",
+    "--include-pii": "includePii",
+    "--source-table": "sourceTable",
+    "--identifier": "identifier",
+    "--temporal-key": "temporalKey",
+    "--entity": "entity",
+    "--expression": "expression",
+    "--source-type": "sourceType",
+    "--source": "source",
+    "--visualization": "visualization",
+    "--dashboard": "dashboard",
+    "--tile": "tile",
+    "--user": "user",
+    "--email": "email",
+    "--filters": "filters",
+    "--result-handle": "resultHandle",
+    "--cursor": "cursor",
+    "--limit": "limit",
+    "--offset": "offset",
+    "--days": "days",
+    "--x": "x",
+    "--y": "y",
+    "--w": "w",
+    "--h": "h",
+    "--prompt": "prompt",
     "--model": "model",
+    "--options": "options",
+    "--status": "status",
+    "--summary": "summary",
+    "--session": "session",
     "--question": "question",
-    "--json": "json",
-    "--body": "body",
-    "--body-file": "bodyFile",
-    "--raw-body": "rawBody",
-    "--query": "query",
+    "--turn": "turn",
+    "--from": "from",
+    "--to": "to",
+    "--relationship-type": "relationshipType",
+    "--join": "join",
     "--form": "form",
-    "--header": "header",
-    "-H": "header",
-    "--output": "output",
-    "-o": "output",
-    "--include": "include",
-    "-i": "include",
-    "--raw": "raw",
-    "--no-auth": "noAuth",
   };
 
   return aliases[rawName] || rawName.replace(/^-+/, "").replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
 }
 
 function isBooleanFlag(rawName) {
-  return [
-    "--json",
-    "--help",
-    "-h",
-    "--raw-body",
-    "--include",
-    "-i",
-    "--raw",
-    "--no-auth",
-  ].includes(rawName);
+  return ["--json", "--help", "-h", "--include", "-i", "--raw", "--admin"].includes(rawName);
 }
 
 function setFlag(flags, name, value) {
-  if (flags[name] === undefined) {
-    flags[name] = value;
-  } else if (Array.isArray(flags[name])) {
-    flags[name].push(value);
-  } else {
-    flags[name] = [flags[name], value];
-  }
-}
-
-function firstValue(value) {
-  return Array.isArray(value) ? value[0] : value;
-}
-
-function allValues(value) {
-  if (value === undefined) {
-    return [];
-  }
-  return Array.isArray(value) ? value : [value];
-}
-
-function parsePairFlags(values, flagName) {
-  const result = {};
-  for (const value of values) {
-    const [key, item] = parsePair(value, flagName);
-    if (result[key] === undefined) {
-      result[key] = item;
-    } else if (Array.isArray(result[key])) {
-      result[key].push(item);
-    } else {
-      result[key] = [result[key], item];
-    }
-  }
-  return result;
-}
-
-function parseHeaderFlags(values) {
-  const result = {};
-  for (const value of values) {
-    const separator = value.includes(":") ? ":" : "=";
-    const index = value.indexOf(separator);
-    if (index === -1) {
-      throw usage(`Expected --header ${separator === ":" ? "Name: value" : "Name=value"}`);
-    }
-    const key = value.slice(0, index).trim();
-    const item = value.slice(index + 1).trim();
-    if (!key) {
-      throw usage("Header name cannot be empty");
-    }
-    result[key] = item;
-  }
-  return result;
-}
-
-function parsePair(value, flagName) {
-  const index = value.indexOf("=");
-  if (index === -1) {
-    throw usage(`Expected ${flagName} key=value`);
-  }
-  const key = value.slice(0, index);
-  const item = value.slice(index + 1);
-  if (!key) {
-    throw usage(`Expected ${flagName} key=value`);
-  }
-  return [key, item];
+  if (flags[name] === undefined) flags[name] = value;
+  else if (Array.isArray(flags[name])) flags[name].push(value);
+  else flags[name] = [flags[name], value];
 }
 
 function parseJsonFlag(value, name) {
-  if (!value) {
-    return null;
-  }
+  if (value === undefined || value === null || value === "") return undefined;
   try {
     return JSON.parse(value);
   } catch (error) {
@@ -478,71 +1201,61 @@ function parseJsonFlag(value, name) {
 }
 
 function parseInteger(value, fallback) {
-  if (value === undefined || value === null || value === "") {
-    return fallback;
-  }
+  if (value === undefined || value === null || value === "") return fallback;
   const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) {
-    throw usage(`Expected an integer, received ${value}`);
-  }
+  if (!Number.isFinite(parsed)) throw usage(`Expected an integer, received ${value}`);
   return parsed;
 }
 
 function requirePositional(positionals, index, label) {
   const value = positionals[index];
-  if (!value) {
-    throw usage(`Missing ${label}`);
-  }
+  if (!value) throw usage(`Missing ${label}`);
   return value;
+}
+
+function requireConnection(connectionId, label) {
+  if (!connectionId) throw usage(`${label} requires --connection <id>`);
+}
+
+function requirePayloadValue(payload, key, message) {
+  if (!payload[key]) throw usage(message);
+}
+
+function csvOrRepeated(value) {
+  const values = allValues(value);
+  return values.flatMap((item) => String(item).split(",").map((part) => part.trim()).filter(Boolean));
+}
+
+function firstValue(value) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function allValues(value) {
+  if (value === undefined) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+function dropUndefined(object) {
+  return Object.fromEntries(Object.entries(object).filter(([, value]) => value !== undefined));
+}
+
+function parsePair(value, flagName) {
+  const index = value.indexOf("=");
+  if (index === -1) throw usage(`Expected ${flagName} key=value`);
+  const key = value.slice(0, index);
+  const item = value.slice(index + 1);
+  if (!key) throw usage(`Expected ${flagName} key=value`);
+  return [key, item];
 }
 
 async function readAll(stream) {
   const chunks = [];
-  for await (const chunk of stream) {
-    chunks.push(Buffer.from(chunk));
-  }
+  for await (const chunk of stream) chunks.push(Buffer.from(chunk));
   return Buffer.concat(chunks).toString("utf8");
 }
 
 function write(stream, text) {
   stream.write(text);
-}
-
-function writeApiResponse(result, parsed, io) {
-  const output = firstValue(parsed.flags.output);
-  if (output) {
-    fs.writeFileSync(output, result.buffer);
-    write(io.stdout, `Wrote ${result.buffer.length} bytes to ${output}\n`);
-    return;
-  }
-
-  if (parsed.flags.include) {
-    write(io.stdout, `HTTP ${result.status}\n`);
-    for (const [key, value] of Object.entries(result.headers)) {
-      write(io.stdout, `${key}: ${value}\n`);
-    }
-    write(io.stdout, "\n");
-  }
-
-  if (parsed.flags.raw) {
-    io.stdout.write(result.buffer);
-    return;
-  }
-
-  if (parsed.flags.json || result.contentType.includes("application/json") || typeof result.data === "object") {
-    write(io.stdout, formatJson(result.data));
-    return;
-  }
-
-  if (typeof result.data === "string") {
-    write(io.stdout, result.data);
-    if (!result.data.endsWith("\n")) {
-      write(io.stdout, "\n");
-    }
-    return;
-  }
-
-  io.stdout.write(result.buffer);
 }
 
 function usage(message) {
@@ -556,43 +1269,48 @@ function helpText() {
 
 Usage:
   answerlayer configure --base-url <url> --api-key <key>
-  answerlayer health [--base-url <url>]
-  answerlayer openapi [--output openapi.json]
-  answerlayer api <method> <path> [--body <json>] [--query key=value]
-  answerlayer connections list [--json]
-  answerlayer connections get <connection-id>
-  answerlayer query run <connection-id> --sql <sql> [--format table|json|csv]
-  answerlayer query validate <connection-id> --sql <sql>
-  answerlayer saved-queries list [--json]
-  answerlayer saved-queries get <saved-query-id>
-  answerlayer saved-queries create --name <name> --connection <id> --sql <sql>
-  answerlayer saved-queries execute <saved-query-id> [--format table|json|csv]
-  answerlayer inquiry ask --connection <id> "question"
-  answerlayer inquiry ask --session <id> "follow up question"
+  answerlayer health
+  answerlayer openapi --output openapi.json
 
-Global options:
-  --base-url <url>   AnswerLayer API base URL. Env: ANSWERLAYER_BASE_URL
-  --api-key <key>    API key. Env: ANSWERLAYER_API_KEY
-  --json             Print JSON where available.
+Core:
+  answerlayer api-keys list|create|revoke
+  answerlayer connections supported|list|get|create|update|delete|schema|test
+  answerlayer metadata structure|tables|columns|pii-summary|pii-settings|detect-pii
+  answerlayer query run|validate|export <connection-id> --sql <sql>
+  answerlayer query-results get|delete <handle>
 
-API parity options:
-  --body <json>         JSON request body.
-  --body-file <path>    Read JSON request body from a file.
-  --raw-body            Send body or body-file as raw text instead of JSON.
-  --query key=value     Add a query parameter. Repeatable.
-  --form key=value      Add a multipart form field. Repeatable.
-  --file field=path     Add a multipart file field. Repeatable for api commands.
-  --header, -H <h=v>    Add a request header. Repeatable.
-  --include, -i         Print response status and headers.
-  --output, -o <path>   Write response bytes to a file.
-  --raw                 Write response bytes directly to stdout.
-  --no-auth             Do not send X-API-Key.
+Data products:
+  answerlayer saved-queries list|get|create|update|delete|approve|unapprove|execute
+  answerlayer semantic <entities|relationships|measures|metrics|dimensions|filters> list|get|create|update|delete|delete-all|generate
+  answerlayer inquiry ask|sessions|create-session|session|update-session|delete-session|turn
+  answerlayer generation start|list|get|status|stream|cancel|questions|guidance|delete
+  answerlayer tiles list|get|create|update|data|delete
+  answerlayer dashboards list|get|create|update|delete|duplicate|manifest|attach-tile|move-tile|detach-tile|assignments|assign|unassign|tile-data
+
+Admin and supporting resources:
+  answerlayer documents upload|list|get|update|delete|link|unlink|connections|for-connection
+  answerlayer branding get|update|upload|extract|asset
+  answerlayer uploads csv|duckdb upload|status|reprocess
+  answerlayer chains list|answers
+  answerlayer users me|update-me|list|get|update
+  answerlayer org me|usage|update|invite|deployment|deploy|delete-deployment
+  answerlayer roles list|create|get|assign|unassign|sync-clerk
+  answerlayer billing status|plans|products|prices|checkout|portal|history|usage-trends
+  answerlayer stats answers|connections
+
+Common options:
+  --base-url <url>       Env: ANSWERLAYER_BASE_URL
+  --api-key <key>        Env: ANSWERLAYER_API_KEY
+  --json                 Print JSON instead of table output when available.
+  --data <json>          Structured request payload.
+  --data-file <path>     Structured request payload file.
+  --output, -o <path>    Write response bytes to a file.
 
 SQL options:
-  --sql, -q <sql>    SQL text.
-  --file, -f <path>  Read SQL from a file.
-  --params <json>    Query parameters as JSON.
-  --row-limit <n>    Row limit. Default: 1000.
-  --timeout <sec>    Timeout in seconds. Default: 30.
+  --sql, -q <sql>        SQL text.
+  --file, -f <path>      Read SQL from a file, or upload a file for upload commands.
+  --params <json>        Query parameters as JSON.
+  --row-limit <n>        Row limit. Default: 1000.
+  --timeout <sec>        Timeout in seconds. Default: 30.
 `;
 }

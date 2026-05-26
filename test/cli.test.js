@@ -84,7 +84,7 @@ test("query run calls the AnswerLayer API with X-API-Key", async () => {
   });
 });
 
-test("api command supports arbitrary method, path, query, body, and headers", async () => {
+test("semantic entities create maps flags to the semantic API", async () => {
   const originalFetch = globalThis.fetch;
   const output = captureStream();
 
@@ -92,8 +92,12 @@ test("api command supports arbitrary method, path, query, body, and headers", as
     assert.equal(String(url), "https://answerlayer.example/api/v1/semantic/entities?connection_id=conn-1");
     assert.equal(init.method, "POST");
     assert.equal(init.headers["X-API-Key"], "al_live_test");
-    assert.equal(init.headers["X-Test"], "yes");
-    assert.deepEqual(JSON.parse(init.body), { name: "orders" });
+    assert.deepEqual(JSON.parse(init.body), {
+      name: "orders",
+      description: "Customer orders",
+      source_table: "public.orders",
+      identifier: "id",
+    });
 
     return new Response(JSON.stringify({ id: "entity-1" }), {
       status: 201,
@@ -103,19 +107,23 @@ test("api command supports arbitrary method, path, query, body, and headers", as
 
   try {
     await main([
-      "api",
-      "post",
-      "/api/v1/semantic/entities",
+      "semantic",
+      "entities",
+      "create",
       "--base-url",
       "https://answerlayer.example",
       "--api-key",
       "al_live_test",
-      "--query",
-      "connection_id=conn-1",
-      "--header",
-      "X-Test=yes",
-      "--body",
-      "{\"name\":\"orders\"}",
+      "--connection",
+      "conn-1",
+      "--name",
+      "orders",
+      "--description",
+      "Customer orders",
+      "--source-table",
+      "public.orders",
+      "--identifier",
+      "id",
     ], {
       env: {},
       stdin: readableStdin(),
@@ -129,19 +137,21 @@ test("api command supports arbitrary method, path, query, body, and headers", as
   assert.deepEqual(JSON.parse(output.text()), { id: "entity-1" });
 });
 
-test("api command can build multipart uploads", async () => {
+test("documents upload builds multipart request ergonomically", async () => {
   const originalFetch = globalThis.fetch;
   const output = captureStream();
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "al-cli-upload-"));
-  const uploadPath = path.join(tempDir, "sample.csv");
-  fs.writeFileSync(uploadPath, "id\n1\n");
+  const uploadPath = path.join(tempDir, "sample.md");
+  fs.writeFileSync(uploadPath, "# Context\n");
 
-  globalThis.fetch = async (_url, init) => {
+  globalThis.fetch = async (url, init) => {
+    assert.equal(String(url), "https://answerlayer.example/api/v1/context-documents/upload");
     assert.equal(init.method, "POST");
     assert.ok(init.body instanceof FormData);
     assert.equal(init.headers["Content-Type"], undefined);
-    assert.equal(init.body.get("name"), "sample");
-    assert.equal(init.body.get("file").name, "sample.csv");
+    assert.equal(init.body.get("title"), "Product context");
+    assert.equal(init.body.get("description"), "Shared business definitions");
+    assert.equal(init.body.get("file").name, "sample.md");
 
     return new Response(JSON.stringify({ ok: true }), {
       status: 200,
@@ -151,17 +161,17 @@ test("api command can build multipart uploads", async () => {
 
   try {
     await main([
-      "api",
-      "post",
-      "/api/v1/csv/upload",
+      "documents",
+      "upload",
+      uploadPath,
       "--base-url",
       "https://answerlayer.example",
       "--api-key",
       "al_live_test",
-      "--form",
-      "name=sample",
-      "--file",
-      `file=${uploadPath}`,
+      "--title",
+      "Product context",
+      "--description",
+      "Shared business definitions",
     ], {
       env: {},
       stdin: readableStdin(),
