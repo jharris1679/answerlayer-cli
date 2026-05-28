@@ -783,9 +783,23 @@ async function handleUploads(client, command, positionals, parsed, io) {
   const action = positionals[0] || "upload";
   if (action === "upload") {
     const file = firstValue(parsed.flags.file) || requirePositional(positionals, 1, "file");
-    const fields = Object.fromEntries(allValues(parsed.flags.form).map((item) => parsePair(item, "--form")));
+    const formFields = Object.fromEntries(allValues(parsed.flags.form).map((item) => parsePair(item, "--form")));
+    const namedFields = command === "csv"
+      ? {
+          name: firstValue(parsed.flags.name),
+          description: firstValue(parsed.flags.description),
+          auto_pii_detection: firstValue(parsed.flags["auto-pii-detection"]),
+          has_header: firstValue(parsed.flags["has-header"]),
+          delimiter: firstValue(parsed.flags.delimiter),
+          quote_char: firstValue(parsed.flags["quote-char"]),
+          encoding: firstValue(parsed.flags.encoding),
+        }
+      : {
+          name: firstValue(parsed.flags.name),
+          description: firstValue(parsed.flags.description),
+        };
     return requestAndPrint(client, "POST", `${base}/upload`, parsed, io, {
-      body: multipart({ file, fields }),
+      body: multipart({ file, fields: { ...namedFields, ...formFields } }),
     });
   }
   if (action === "status") {
